@@ -10,11 +10,12 @@ import numpy as np
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
-from flipton import MastodonInstanceSwitcher
+from flipton import MastodonInstanceSwitcher, FliptonError
 from cacheodon.util import trace
 from cacheodon.config import SKIP_HOSTS, MAX_STATUS_FETCH_PER_QUERY
 from cacheodon.statusesdata import StatusesData
 from warnings import warn
+from mastodon.errors import MastodonError
 
 class Collector(object):
     '''
@@ -77,9 +78,14 @@ class Collector(object):
         """
         cache = self._follows_cache_file(user, host)
         if update or not cache.exists():
-            follows = self._fetch_follows(user, host)
+            try:
+                follows = self._fetch_follows(user, host)
+            except FliptonError as e:
+                follows=None
+                print("Failed looking up follows for '%s@%s'. Error: %s"%(user, host, str(e)))
             retrieved = datetime.now(timezone.utc)
-            self._set_follows_cache(user, host, (follows, retrieved))
+            if follows is not None:
+                self._set_follows_cache(user, host, (follows, retrieved))
         else:
             follows, retrieved = self._get_follows_cache(user, host)
         return follows, retrieved
@@ -161,7 +167,7 @@ class Collector(object):
         follows_of_follows = {}
         for i, facct in enumerate(follows):
             fuser, fhost = facct.split("@")
-            trace("  acct: %s (%d/%d)"%(facct, i, len((follows["accts"]))), 2)
+            trace("  acct: %s (%d/%d)"%(facct, i, len(follows)), 2)
             
             if fhost in SKIP_HOSTS:
                 trace("  Skipping host '%s' for '%s'"%(fhost, facct), 2)
@@ -202,12 +208,12 @@ class Collector(object):
         acct = self._acct(user, host)
         try:
             trace("   Fetching all follows for '%s'"%(acct))
-            acct_info = self.get_account(user, host)
+            acct_info, retrieved = self.get_account(user, host)
             trace("   Number of follows: %d"%(acct_info["following_count"]))
             follows = self.mis.account_following(acct)
             follows = self.mis.fetch_remaining(follows)
             trace("   fetched: %d"%(len(follows)))
-        except Exception as e:
+        except MastodonError as e:
             trace("Error fetching follows of %s: '%s'"%(acct, str(e)), 0)
             return None
         
@@ -240,7 +246,7 @@ class Collector(object):
             followers = self.mis.account_followers(acct)
             followers = self.mis.fetch_remaining(followers)
             trace("   fetched: %d"%(len(followers)))
-        except Exception as e:
+        except MastodonError as e:
             warn("Error fetching followers of %s: '%s'"%(acct, str(e)))
             raise e
             return None
@@ -263,13 +269,13 @@ class Collector(object):
     
         
     def _get_follows_cache(self, user, host):
-        cache = self._follow_cache_file(user, host)
+        cache = self._follows_cache_file(user, host)
         if cache.exists():
             with open(cache, "rb") as f:
                 data = pickle.load(f)
         else:
             return None, None
-        trace("  Loaded %d accounts followed by '%s' from cache '%s'."%(len(data["follows"]["accts"]), self._acct(user, host), cache))
+        trace("  Loaded %d accounts followed by '%s' from cache '%s'."%(len(data[0]), self._acct(user, host), cache))
         return data
     
     
@@ -297,10 +303,10 @@ class Collector(object):
     
     
     def _set_follows_cache(self, user, host, data):
-        cache = self._follow_cache_file(user, host)
+        cache = self._follows_cache_file(user, host)
         with open(cache, "wb") as f:
             pickle.dump(data, f)
-        trace("  Saved %d accounts followed by '%s' to cache '%s'."%(len(data["follows"]["accts"]), self._acct(user, host), cache))
+        trace("  Saved %d accounts followed by '%s' to cache '%s'."%(len(data[0]), self._acct(user, host), cache))
         
         
     def _get_account_cache(self, user, host):
